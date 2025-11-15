@@ -13,6 +13,7 @@ from github.Branch import Branch
 from github.Label import Label
 from github.IssueComment import IssueComment
 from github.Hook import Hook
+from github.GithubException import GithubException
 
 
 class GitHubService:
@@ -346,6 +347,160 @@ class GitHubService:
             "commit_sha": new_commit.sha,
             "branch": branch,
             "file_path": file_path,
+            "message": message,
+        }
+
+    def create_branch(
+        self,
+        owner: str,
+        repo: str,
+        branch: str,
+        base_branch: str,
+    ) -> Dict[str, Any]:
+        """
+        Create a new branch from a base branch.
+
+        Args:
+            owner: Repository owner (username or organization)
+            repo: Repository name
+            branch: Name of the new branch to create
+            base_branch: Name of the base branch to create from (e.g., "main", "master")
+
+        Returns:
+            Dictionary with branch information
+
+        Raises:
+            ValueError: If base branch is not found or branch already exists
+
+        Example:
+            >>> service = GitHubService(token="ghp_xxx")
+            >>> result = service.create_branch(
+            ...     owner="octocat",
+            ...     repo="Hello-World",
+            ...     branch="feature/new-branch",
+            ...     base_branch="main"
+            ... )
+        """
+        repository = self.get_repository(owner, repo)
+
+        # Check if branch already exists
+        try:
+            repository.get_git_ref(f"heads/{branch}")
+            raise ValueError(f"Branch '{branch}' already exists")
+        except GithubException as e:
+            # Branch doesn't exist (404 or similar), which is what we want
+            if e.status != 404:
+                raise
+        except ValueError:
+            # Re-raise ValueError if branch exists
+            raise
+
+        # Get the base branch reference
+        try:
+            base_ref = repository.get_git_ref(f"heads/{base_branch}")
+        except Exception as e:
+            raise ValueError(f"Base branch '{base_branch}' not found: {e}")
+
+        # Create new branch from base branch
+        repository.create_git_ref(f"refs/heads/{branch}", base_ref.object.sha)
+
+        return {
+            "branch": branch,
+            "base_branch": base_branch,
+            "commit_sha": base_ref.object.sha,
+        }
+
+    def push_files_to_branch(
+        self,
+        owner: str,
+        repo: str,
+        branch: str,
+        files: Dict[str, str],
+        message: str,
+    ) -> Dict[str, Any]:
+        """
+        Push multiple files to a branch.
+
+        This method commits multiple files to an existing branch in a single commit.
+        The branch must already exist.
+
+        Args:
+            owner: Repository owner (username or organization)
+            repo: Repository name
+            branch: Name of the branch to push files to
+            files: Dictionary mapping file paths to file contents
+                   Example: {"src/file1.py": "content1", "src/file2.py": "content2"}
+            message: Commit message
+
+        Returns:
+            Dictionary with commit information
+
+        Raises:
+            ValueError: If branch is not found
+
+        Example:
+            >>> service = GitHubService(token="ghp_xxx")
+            >>> result = service.push_files_to_branch(
+            ...     owner="octocat",
+            ...     repo="Hello-World",
+            ...     branch="feature/new-branch",
+            ...     files={
+            ...         "src/file1.py": "# File 1 content",
+            ...         "src/file2.py": "# File 2 content",
+            ...         "docs/README.md": "# Documentation"
+            ...     },
+            ...     message="Add new files"
+            ... )
+        """
+        repository = self.get_repository(owner, repo)
+
+        # Get the branch reference
+        try:
+            branch_ref = repository.get_git_ref(f"heads/{branch}")
+        except Exception as e:
+            raise ValueError(f"Branch '{branch}' not found: {e}")
+
+        # Get the current commit
+        commit = repository.get_git_commit(branch_ref.object.sha)
+
+        # Get the current tree
+        tree = repository.get_git_tree(commit.tree.sha, recursive=True)
+
+        # Create blobs for all files
+        from github import InputGitTreeElement
+
+        file_paths = set(files.keys())
+        tree_elements = []
+
+        # Keep existing tree elements that are not being updated
+        for element in tree.tree:
+            if element.path not in file_paths:
+                tree_elements.append(
+                    InputGitTreeElement(
+                        element.path, element.mode, element.type, element.sha
+                    )
+                )
+
+        # Create blobs and add new/updated files to tree
+        for file_path, content in files.items():
+            blob = repository.create_git_blob(content, "utf-8")
+            tree_elements.append(
+                InputGitTreeElement(file_path, "100644", "blob", blob.sha)
+            )
+
+        # Create new tree
+        new_tree = repository.create_git_tree(tree_elements, base_tree=tree)
+
+        # Create new commit
+        new_commit = repository.create_git_commit(message, new_tree, [commit])
+
+        # Update branch reference
+        branch_ref.edit(new_commit.sha)
+
+        return {
+            "commit_sha": new_commit.sha,
+            "branch": branch,
+            "files": list(files.keys()),
             "message": message,
         }
 
