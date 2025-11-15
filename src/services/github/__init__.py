@@ -1,0 +1,6 @@
+"""GitHub service module."""
+
+from .github import GitHubService
+
+__all__ = ["GitHubService"]
+
